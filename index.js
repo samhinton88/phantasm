@@ -1,74 +1,133 @@
-const MARK = Symbol('MARK')
+const isEmptyObject = (obj) =>
+  obj && // 👈 null and undefined check
+  Object.keys(obj).length === 0 &&
+  obj.constructor === Object;
 
-const accessProxy = (obj, memo = {}) => {
-    return new Proxy(obj, {
-        get(subTarget, prop, receiver) {
-            let sub = subTarget;
+const nullified = (config) => {
+  Object.keys(config).forEach((key) => {
+    if (isEmptyObject(config[key])) {
+      config[key] = null;
+    } else {
+      nullified(config[key]);
+    }
+  });
 
-            if (prop === Symbol.iterator) {
-                let count = 0
+  return config;
+};
 
-                return function* () {
-                    while (true) {
-                        const got = Reflect.get(sub, prop, receiver)
+const accessProxy = (obj, memo = {}, prevProp = "", options = {}) => {
+  return new Proxy(obj, {
+    get(subTarget, prop, receiver) {
+      let sub = subTarget;
 
-                        memo[count] = {}
-                        yield accessProxy({}, memo[count]);
+      if (prop === Symbol.iterator) {
+        let count = 0;
+        const isFinalArrayDestructure =
+          prevProp === options.firstIdentifierBeforeArrayDestructure;
 
-                        count++;
-                    }
-                }
+        return function* () {
+          while (true) {
+            memo[count] = {};
+            if (isFinalArrayDestructure) {
+              if (options.lastArrayDestructureLength - 1 === count) {
+                throw new Error();
+              }
             }
+            yield accessProxy({}, memo[count], count, options);
 
-            const got = Reflect.get(sub, prop, receiver)
+            count++;
+          }
+        };
+      }
 
-            memo[prop] = got || {};
+      const got = Reflect.get(sub, prop, receiver);
 
-            return typeof got === 'object'
-                ? accessProxy(got, memo[prop]) :
-                typeof got === 'undefined'
-                    ? accessProxy({}, memo[prop]) :
-                    got
-                ;
-        }
-    })
-}
+      memo[prop] = got || {};
 
-const trapFunction = (fn) => {
-    const memo = {};
-    const trapped = new Proxy(fn, {
-        apply(target, thisArg) {
-            const args = new Array(target.length);
+      if (prop === options.finalParamToken) {
+        throw new Error("Final token " + options.finalParamToken);
+      }
 
-            for (let i = 0; i < target.length; i++) args[i] = {};
+      return typeof got === "object"
+        ? accessProxy(got, memo[prop], prop, options)
+        : typeof got === "undefined"
+        ? accessProxy({}, memo[prop], prop, options)
+        : got;
+    },
+  });
+};
 
-            Reflect.apply(
-                target,
-                thisArg,
-                accessProxy(args, memo))
+const trapFunction = (fn, options) => {
+  const memo = {};
 
-        }
-    });
+  const trapped = new Proxy(fn, {
+    apply(target, thisArg) {
+      const args = new Array(target.length);
 
+      for (let i = 0; i < target.length; i++) args[i] = {};
+
+      Reflect.apply(target, thisArg, accessProxy(args, memo, null, options));
+    },
+  });
+  try {
     trapped();
-
+  } catch (e) {
+    // console.log(e)
+  } finally {
     return memo;
+  }
+};
+const last = (arr) => arr[arr.length - 1];
+
+const parsedParamConfig = (paramString) => {
+    const options = { };
+    const lastParamToken = last(paramString.match(/\b(\w+)\W*$/));
+    options.lastParamToken = lastParamToken;
+    const i = paramString.match(new RegExp(lastParamToken)).index;
+
+
+    const lastParamTokenIsPartOfArrayDestructure =
+        paramString[lastParamToken.length + i] === "]";
+
+  if (lastParamTokenIsPartOfArrayDestructure) {
+    options.lastParamTokenIsPartOfArrayDestructure = true;
+    const countBackToStartBracket = paramString
+      .substr(lastParamToken.length, i)
+      .split("")
+      .reverse()
+      .join("")
+      .indexOf("[");
+
+    const arrayDestructureStart =
+      paramString.length - countBackToStartBracket - lastParamToken.length + 1;
+    const arrayDestructureEnd =
+      paramString.length - i + lastParamToken.length - 2;
+
+    const firstIdentifierBeforeArrayDestructure = last(
+      paramString.substr(0, arrayDestructureStart).match(/\b(\w+)\W*$/)
+    );
+
+    const lastArrayDestructureLength = paramString
+      .substr(arrayDestructureStart, arrayDestructureEnd)
+      .split(",").length;
+
+    options.lastArrayDestructureLength = lastArrayDestructureLength;
+    options.firstIdentifierBeforeArrayDestructure =
+      firstIdentifierBeforeArrayDestructure;
+  }
+
+  return options
 }
 
-const phantasm = fn => {
-    return trapFunction(fn);
+const isolatedParamStringFrom = fn => {
+    return fn.toString().split("=>")[0].split(" ").join("");
 }
 
-const toGhost = ({ foo: { bar, baz }, '..': { bim: [boo] } }, { blow }) => { };
-const toGhostWithArray = ({ foo: [cool, { bimbo: { bango } }] }) => { };
-const memo = phantasm(toGhostWithArray)
+const phantasm = (fn) => {
+  const paramString = isolatedParamStringFrom(fn);
+  const options = parsedParamConfig(paramString);
 
-console.log(JSON.stringify(memo, null, 2));
-console.log(toGhost.toString())
-const markDependencies = config => {
-    const stateDeps = config[0];
+  return nullified(trapFunction(fn, options));
+};
 
-
-}
-
-
+module.exports = phantasm;
