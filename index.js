@@ -1,101 +1,133 @@
-const MARK = Symbol('MARK');
-const CIRCULAR = Symbol();
+const isEmptyObject = (obj) =>
+  obj && // 👈 null and undefined check
+  Object.keys(obj).length === 0 &&
+  obj.constructor === Object;
 
-const accessProxy = (obj, memo = {}, prevProp='', finalToken = '') => {
-    return new Proxy(obj, {
-        get(subTarget, prop, receiver) {
-            let sub = subTarget;
-
-            if (prop === Symbol.iterator) {
-                let count = 0;
-                const isFinalArrayDestructure = prevProp === finalToken;
-
-                return function* () {
-                    while (true) {
-                        const got = Reflect.get(sub, prop, receiver)
-
-                        memo[count] = {}
-                        if (isFinalArrayDestructure) {
-
-                        }
-                        yield accessProxy({}, memo[count], count, finalToken);
-
-                        count++;
-                    }
-                }
-            }
-
-            const got = Reflect.get(sub, prop, receiver)
-
-            memo[prop] = got || {};
-
-            if (prop === finalToken) {
-                throw new Error('Final token ' + finalToken)
-            }
-
-            return typeof got === 'object'
-                ? accessProxy(got, memo[prop],prop, finalToken) :
-                typeof got === 'undefined'
-                    ? accessProxy({}, memo[prop],prop, finalToken) :
-                    got
-                ;
-        }
-    })
-}
-
-const trapFunction = (fn, finalParamToken) => {
-    const memo = {};
-
-    const trapped = new Proxy(fn, {
-        apply(target, thisArg) {
-            const args = new Array(target.length);
-
-            for (let i = 0; i < target.length; i++) args[i] = {};
-
-            args
-
-            Reflect.apply(
-                target,
-                thisArg,
-                accessProxy(args, memo, null, finalParamToken))
-
-        }
-    });
-    try {
-        trapped();
-    } catch (e) { 
-        console.log(e)
-    } finally {
-        return memo;
+const nullified = (config) => {
+  Object.keys(config).forEach((key) => {
+    if (isEmptyObject(config[key])) {
+      config[key] = null;
+    } else {
+      nullified(config[key]);
     }
+  });
 
-}
-const last = arr => arr[arr.length - 1]
+  return config;
+};
 
-const phantasm = fn => {
-    const paramString = fn.toString().split('=>')[0].split(' ').join('')
-    const lastParamToken = last(paramString.match(/\b(\w+)\W*$/))
-    
+const accessProxy = (obj, memo = {}, prevProp = "", options = {}) => {
+  return new Proxy(obj, {
+    get(subTarget, prop, receiver) {
+      let sub = subTarget;
+
+      if (prop === Symbol.iterator) {
+        let count = 0;
+        const isFinalArrayDestructure =
+          prevProp === options.firstIdentifierBeforeArrayDestructure;
+
+        return function* () {
+          while (true) {
+            memo[count] = {};
+            if (isFinalArrayDestructure) {
+              if (options.lastArrayDestructureLength - 1 === count) {
+                throw new Error();
+              }
+            }
+            yield accessProxy({}, memo[count], count, options);
+
+            count++;
+          }
+        };
+      }
+
+      const got = Reflect.get(sub, prop, receiver);
+
+      memo[prop] = got || {};
+
+      if (prop === options.finalParamToken) {
+        throw new Error("Final token " + options.finalParamToken);
+      }
+
+      return typeof got === "object"
+        ? accessProxy(got, memo[prop], prop, options)
+        : typeof got === "undefined"
+        ? accessProxy({}, memo[prop], prop, options)
+        : got;
+    },
+  });
+};
+
+const trapFunction = (fn, options) => {
+  const memo = {};
+
+  const trapped = new Proxy(fn, {
+    apply(target, thisArg) {
+      const args = new Array(target.length);
+
+      for (let i = 0; i < target.length; i++) args[i] = {};
+
+      Reflect.apply(target, thisArg, accessProxy(args, memo, null, options));
+    },
+  });
+  try {
+    trapped();
+  } catch (e) {
+    // console.log(e)
+  } finally {
+    return memo;
+  }
+};
+const last = (arr) => arr[arr.length - 1];
+
+const parsedParamConfig = (paramString) => {
+    const options = { };
+    const lastParamToken = last(paramString.match(/\b(\w+)\W*$/));
+    options.lastParamToken = lastParamToken;
     const i = paramString.match(new RegExp(lastParamToken)).index;
 
-    console.log(paramString.substr(lastParamToken.length, i).split('').reverse().join(''))
 
-    const countBackToStartBracket = paramString.substr(lastParamToken.length, i).split('').reverse().join('').indexOf('[');
-    console.log({ i, countBackToStartBracket })
-    console.log(paramString.substr(paramString.length  - countBackToStartBracket - lastParamToken.length, paramString.length - i + lastParamToken.length))
-    return trapFunction(fn, lastParamToken);
+    const lastParamTokenIsPartOfArrayDestructure =
+        paramString[lastParamToken.length + i] === "]";
+
+  if (lastParamTokenIsPartOfArrayDestructure) {
+    options.lastParamTokenIsPartOfArrayDestructure = true;
+    const countBackToStartBracket = paramString
+      .substr(lastParamToken.length, i)
+      .split("")
+      .reverse()
+      .join("")
+      .indexOf("[");
+
+    const arrayDestructureStart =
+      paramString.length - countBackToStartBracket - lastParamToken.length + 1;
+    const arrayDestructureEnd =
+      paramString.length - i + lastParamToken.length - 2;
+
+    const firstIdentifierBeforeArrayDestructure = last(
+      paramString.substr(0, arrayDestructureStart).match(/\b(\w+)\W*$/)
+    );
+
+    const lastArrayDestructureLength = paramString
+      .substr(arrayDestructureStart, arrayDestructureEnd)
+      .split(",").length;
+
+    options.lastArrayDestructureLength = lastArrayDestructureLength;
+    options.firstIdentifierBeforeArrayDestructure =
+      firstIdentifierBeforeArrayDestructure;
+  }
+
+  return options
 }
 
-const toGhost = ({ foo: { bar, baz }, '..': { bim: [boo] } }, { blow: [{bum: [bobbies, booties]}] }) => { bum.whatever()};
-const toGhostWithArray = ({ foo: [cool, { bimbo: { bango } }] }) => { bango.push()};
-const memo = phantasm(toGhost)
-
-// console.log(JSON.stringify(memo, null, 2));
-// console.log(toGhost.toString())
-const markDependencies = config => {
-    const stateDeps = config[0];
-
-
+const isolatedParamStringFrom = fn => {
+    return fn.toString().split("=>")[0].split(" ").join("");
 }
 
+const phantasm = (fn) => {
+  const paramString = isolatedParamStringFrom(fn);
+  const options = parsedParamConfig(paramString);
 
+  return nullified(trapFunction(fn, options));
+};
+
+module.exports = phantasm;
